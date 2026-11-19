@@ -1,6 +1,7 @@
 import type { ParticipantId } from './participants'
 
 export const MAX_DURATION_MINUTES = 1440
+export const ANTI_SNIPE_MS = 30_000
 const MINUTE_MS = 60_000
 
 export const STAGE_LABEL = {
@@ -74,6 +75,7 @@ export type AuctionCommand =
   | { type: 'place_bid'; actorId: ParticipantId; amount: number }
   | { type: 'set_autobroker'; actorId: ParticipantId; maxAmount: number }
   | { type: 'remove_autobroker'; actorId: ParticipantId }
+  | { type: 'close_if_due' }
 
 export type RejectReason =
   | 'not_integer'
@@ -119,7 +121,9 @@ export function apply(state: AuctionState, command: AuctionCommand, now: number)
     case 'set_autobroker':
       return applySetAutobroker(state, command, now)
     case 'remove_autobroker':
-      return applyRemoveAutobroker(state, command)
+      return applyRemoveAutobroker(state, command, now)
+    case 'close_if_due':
+      return applyCloseIfDue(state, now)
     default: {
       const unknown: never = command
       return unknown
@@ -169,14 +173,12 @@ function applyFinish(state: AuctionState, command: Extract<AuctionCommand, { typ
   if (!isSeller(command.actorId)) return reject(state, 'not_seller')
   if (state.stage !== 'live') return reject(state, 'wrong_stage')
 
-  return accept({
-    stage: 'closed',
-    terms: { ...state.terms },
-    endsAt: state.endsAt,
-    leader: state.leader ? { ...state.leader } : null,
-    bids: state.bids.map((bid) => ({ ...bid })),
-    autobrokers: copyAutobrokers(state.autobrokers),
-  })
+  return accept(closeLive(state))
+}
+
+function applyCloseIfDue(state: AuctionState, now: number): ApplyResult {
+  const closed = closedByClock(state, now)
+  return accept(closed ?? state)
 }
 
 function applyRestart(state: AuctionState, command: Extract<AuctionCommand, { type: 'restart' }>): ApplyResult {
@@ -198,6 +200,8 @@ function applyBid(
   if (!isBuyer(command.actorId)) return reject(state, 'not_buyer')
   if (state.stage === 'closed') return reject(state, 'lot_closed')
   if (state.stage !== 'live') return reject(state, 'not_started')
+  const closed = closedByClock(state, now)
+  if (closed) return reject(closed, 'lot_closed')
   if (!Number.isSafeInteger(command.amount)) return reject(state, 'not_integer')
   if (state.leader?.participantId === command.actorId) return reject(state, 'already_leader')
   if (command.amount < nextAmount(state)) return reject(state, 'below_min')
@@ -214,6 +218,8 @@ function applySetAutobroker(
   if (!isBuyer(command.actorId)) return reject(state, 'not_buyer')
   if (state.stage === 'closed') return reject(state, 'lot_closed')
   if (state.stage !== 'live') return reject(state, 'not_started')
+  const closed = closedByClock(state, now)
+  if (closed) return reject(closed, 'lot_closed')
   if (!Number.isSafeInteger(command.maxAmount)) return reject(state, 'not_integer')
 
   const floor = state.leader?.participantId === command.actorId ? state.leader.amount : nextAmount(state)
@@ -232,10 +238,13 @@ function applySetAutobroker(
 function applyRemoveAutobroker(
   state: AuctionState,
   command: Extract<AuctionCommand, { type: 'remove_autobroker' }>,
+  now: number,
 ): ApplyResult {
   if (!isBuyer(command.actorId)) return reject(state, 'not_buyer')
   if (state.stage === 'closed') return reject(state, 'lot_closed')
   if (state.stage !== 'live') return reject(state, 'not_started')
+  const closed = closedByClock(state, now)
+  if (closed) return reject(closed, 'lot_closed')
   if (!state.autobrokers[command.actorId]) return accept(state)
 
   const autobrokers = { ...state.autobrokers }
@@ -259,9 +268,34 @@ function placeBid(
   }
   return {
     ...state,
+    endsAt: extendEndsAt(state.endsAt, now),
     leader: { participantId: actorId, amount },
     bids: [...state.bids, bid],
   }
+}
+
+function extendEndsAt(endsAt: number, now: number): number {
+  if (endsAt - now <= ANTI_SNIPE_MS) return now + ANTI_SNIPE_MS
+  return endsAt
+}
+
+function closeLive(state: Extract<AuctionState, { stage: 'live' }>): Extract<AuctionState, { stage: 'closed' }> {
+  return {
+    stage: 'closed',
+    terms: { ...state.terms },
+    endsAt: state.endsAt,
+    leader: state.leader ? { ...state.leader } : null,
+    bids: state.bids.map((bid) => ({ ...bid })),
+    autobrokers: copyAutobrokers(state.autobrokers),
+  }
+}
+
+function closedByClock(
+  state: AuctionState,
+  now: number,
+): Extract<AuctionState, { stage: 'closed' }> | null {
+  if (state.stage !== 'live' || now < state.endsAt) return null
+  return closeLive(state)
 }
 
 function withChase(

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ANTI_SNIPE_MS,
   STAGE_LABEL,
   apply,
   emptyAuction,
@@ -404,6 +405,64 @@ describe('autobroker', () => {
     expect(reopened.autobrokers).toEqual({})
     const bid = asLive(taken(apply(reopened, { type: 'place_bid', actorId: 'a', amount: 10_000 }, T0 + 7)))
     expect(bid.bids).toHaveLength(1)
+  })
+})
+
+describe('clock', () => {
+  it('leaves the end alone until the last 30 seconds', () => {
+    const live = openLot()
+    const outside = asLive(
+      taken(apply(live, { type: 'place_bid', actorId: 'a', amount: 10_000 }, live.endsAt - ANTI_SNIPE_MS - 1)),
+    )
+    expect(outside.endsAt).toBe(live.endsAt)
+
+    const border = asLive(
+      taken(apply(live, { type: 'place_bid', actorId: 'a', amount: 10_000 }, live.endsAt - ANTI_SNIPE_MS)),
+    )
+    expect(border.endsAt).toBe(live.endsAt)
+
+    const now = live.endsAt - 10_000
+    const inside = asLive(taken(apply(live, { type: 'place_bid', actorId: 'a', amount: 10_000 }, now)))
+    expect(inside.endsAt).toBe(now + ANTI_SNIPE_MS)
+  })
+
+  it('extends the end once when a broker chain answers inside the window', () => {
+    const live = openLot()
+    const higher = taken(apply(live, { type: 'set_autobroker', actorId: 'a', maxAmount: 20_000 }, T0 + 1_000))
+    const now = live.endsAt - 10_000
+    const war = asLive(taken(apply(higher, { type: 'set_autobroker', actorId: 'b', maxAmount: 15_000 }, now)))
+
+    expect(war.leader).toEqual({ participantId: 'a', amount: 15_000 })
+    expect(war.bids.length).toBeGreaterThan(1)
+    expect(war.bids.every((bid) => bid.at === now && bid.source === 'autobroker')).toBe(true)
+    expect(war.endsAt).toBe(now + ANTI_SNIPE_MS)
+  })
+
+  it('closes a late bid the same way as the seller finishing the round', () => {
+    const live = openLot()
+    const leading = asLive(taken(apply(live, { type: 'place_bid', actorId: 'a', amount: 10_000 }, T0 + 1_000)))
+    const byHand = taken(apply(leading, { type: 'finish', actorId: 's' }, leading.endsAt))
+    const byClock = taken(apply(leading, { type: 'close_if_due' }, leading.endsAt))
+    expect(byClock).toEqual(byHand)
+    expect(byClock.stage === 'closed' && byClock.leader).toEqual({ participantId: 'a', amount: 10_000 })
+    expect(byClock.stage === 'closed' && byClock.endsAt).toBe(leading.endsAt)
+
+    const late = refused(apply(leading, { type: 'place_bid', actorId: 'b', amount: 11_000 }, leading.endsAt))
+    expect(late.reason).toBe('lot_closed')
+    expect(late.state).toEqual(byClock)
+
+    const broker = refused(apply(leading, { type: 'set_autobroker', actorId: 'b', maxAmount: 20_000 }, leading.endsAt + 1))
+    expect(broker.reason).toBe('lot_closed')
+    expect(broker.state.stage).toBe('closed')
+    if (broker.state.stage === 'closed') expect(broker.state.autobrokers).toEqual({})
+  })
+
+  it('does not close a round that still has time', () => {
+    const live = openLot()
+    expect(taken(apply(live, { type: 'close_if_due' }, live.endsAt - 1))).toBe(live)
+
+    const empty = emptyAuction()
+    expect(taken(apply(empty, { type: 'close_if_due' }, T0))).toBe(empty)
   })
 })
 
