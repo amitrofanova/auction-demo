@@ -19,6 +19,8 @@ const props = defineProps<{
 const snapshot = ref<Extract<ReturnType<typeof readIncoming>, { kind: 'snapshot' }>['snapshot'] | null>(null)
 const sellerError = ref('')
 const bidError = ref('')
+const brokerError = ref('')
+const brokerInput = ref('20000')
 const sending = ref(false)
 const startInput = ref('10000')
 const stepInput = ref('1000')
@@ -39,7 +41,19 @@ const { status, send } = useColumnSocket(props.participant.id, (text) => {
       bidError.value = reasonText(next.reason, 'place_bid')
       return
     }
+    if (next.command === 'set_autobroker' || next.command === 'remove_autobroker') {
+      brokerError.value = reasonText(next.reason, next.command)
+      return
+    }
     if (isSeller.value) sellerError.value = reasonText(next.reason, next.command)
+    return
+  }
+  if (next.kind === 'autobroker') {
+    if (snapshot.value?.role !== 'buyer') return
+    snapshot.value = {
+      ...snapshot.value,
+      autobroker: next.maxAmount === null ? null : { maxAmount: next.maxAmount },
+    }
     return
   }
   if (next.snapshot.role !== expectedRole) return
@@ -99,6 +113,12 @@ watch(suggested, (value) => {
 
 const amountLabel = computed(() => (snapshot.value?.amount == null ? '—' : formatRubles(snapshot.value.amount)))
 
+const brokerStatus = computed(() => {
+  const broker = buyerSnapshot.value?.autobroker
+  if (!broker) return 'Выключен'
+  return `Включён, потолок ${formatRubles(broker.maxAmount)}`
+})
+
 const timerText = computed(() => {
   const current = snapshot.value
   if (!current || current.stage === 'closed') return current?.stage === 'closed' ? 'закрыт' : '—'
@@ -139,6 +159,20 @@ function placeBid() {
   bidError.value = ''
   sending.value = true
   const message: ClientMessage = { type: 'place_bid', amount: Number(amountInput.value) }
+  send(JSON.stringify(message))
+}
+
+function setAutobroker() {
+  if (!socketOpen.value) return
+  brokerError.value = ''
+  const message: ClientMessage = { type: 'set_autobroker', maxAmount: Number(brokerInput.value) }
+  send(JSON.stringify(message))
+}
+
+function removeAutobroker() {
+  if (!socketOpen.value) return
+  brokerError.value = ''
+  const message: ClientMessage = { type: 'remove_autobroker' }
   send(JSON.stringify(message))
 }
 </script>
@@ -211,6 +245,49 @@ function placeBid() {
       </form>
       <p v-if="suggested !== null" class="hint">От {{ formatRubles(suggested) }}, только сумма кратная шагу.</p>
       <p v-if="bidError" class="error" data-testid="bid-error">{{ bidError }}</p>
+    </section>
+
+    <section v-if="buyerSnapshot && snapshot?.stage === 'live'" class="panel">
+      <h2 class="panel-title">Автоброкер</h2>
+      <p data-testid="broker-status">{{ brokerStatus }}</p>
+      <p class="hint">Каждый ответ равен шагу. Потолок — до какой цены отвечать.</p>
+      <label v-if="!buyerSnapshot.autobroker">
+        Потолок, ₽
+        <input v-model="brokerInput" data-testid="broker-max" inputmode="numeric" autocomplete="off" />
+      </label>
+      <div class="actions">
+        <button
+          v-if="!buyerSnapshot.autobroker"
+          class="primary"
+          type="button"
+          data-testid="broker-on"
+          :disabled="!socketOpen"
+          @click="setAutobroker"
+        >
+          Включить
+        </button>
+        <button
+          v-else
+          class="ghost"
+          type="button"
+          data-testid="broker-off"
+          :disabled="!socketOpen"
+          @click="removeAutobroker"
+        >
+          Выключить
+        </button>
+      </div>
+      <div class="broker-log" data-testid="broker-log">
+        <p class="hint">Мои автоставки</p>
+        <p v-if="buyerSnapshot.autobids.length === 0" class="hint">Пока нет</p>
+        <ol v-else class="feed">
+          <li v-for="bid in buyerSnapshot.autobids" :key="bid.seq">
+            <span class="sum">{{ formatRubles(bid.amount) }}</span>
+            <time>{{ formatClock(bid.at) }}</time>
+          </li>
+        </ol>
+      </div>
+      <p v-if="brokerError" class="error" data-testid="broker-error">{{ brokerError }}</p>
     </section>
 
     <p

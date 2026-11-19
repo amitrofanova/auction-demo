@@ -1,6 +1,7 @@
 export function reasonText(reason: string, command?: string): string {
   if (reason === 'below_min' && command === 'place_bid') return 'Ставка ниже допустимой'
-  if (reason === 'not_integer' && command === 'place_bid') return 'Нужна целая сумма'
+  if (reason === 'not_integer' && (command === 'place_bid' || command === 'set_autobroker')) return 'Нужна целая сумма'
+  if (reason === 'max_too_low') return 'Потолок ниже допустимой цены'
   switch (reason) {
     case 'not_integer':
       return 'Нужны целые числа'

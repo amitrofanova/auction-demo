@@ -302,6 +302,14 @@ time {
   font-weight: 700;
 }
 
+.broker-log {
+  margin-top: 12px;
+}
+
+.broker-log .sum {
+  margin-left: 0;
+}
+
 @media (max-width: 980px) {
   h1 {
     font-size: 32px;
