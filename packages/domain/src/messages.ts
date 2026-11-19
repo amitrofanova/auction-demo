@@ -1,5 +1,6 @@
-import type { AuctionCommand } from './auction'
+import type { AuctionCommand, RejectReason } from './auction'
 import { participantById, type ParticipantId } from './participants'
+import type { Snapshot } from './project'
 
 /**
  * Команда с сокета. Роль есть только у join:
@@ -20,6 +21,23 @@ export type ClientCommand = Exclude<ClientMessage, { type: 'join' }>
 export type ParseFailure = 'bad_message' | 'unknown_participant'
 
 export type ParseResult = { ok: true; message: ClientMessage } | { ok: false; reason: ParseFailure }
+
+export type ServerReason = RejectReason | ParseFailure
+
+/** Отказ комната шлёт только отправителю. */
+export type RejectedMessage = {
+  type: 'rejected'
+  reason: ServerReason
+  command?: ClientCommand['type']
+}
+
+/** Потолок комната шлёт только отправителю. null — автоброкер выключен. */
+export type AutobrokerStatusMessage = {
+  type: 'autobroker'
+  maxAmount: number | null
+}
+
+export type ServerMessage = Snapshot | RejectedMessage | AutobrokerStatusMessage
 
 export function parseClientMessage(text: string): ParseResult {
   let value: unknown

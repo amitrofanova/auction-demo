@@ -1,7 +1,16 @@
 export { PARTICIPANTS, participantById } from './participants'
 export type { Participant, ParticipantId } from './participants'
 export { parseClientMessage, toAuctionCommand } from './messages'
-export type { ClientCommand, ClientMessage, ParseFailure, ParseResult } from './messages'
+export type {
+  AutobrokerStatusMessage,
+  ClientCommand,
+  ClientMessage,
+  ParseFailure,
+  ParseResult,
+  RejectedMessage,
+  ServerMessage,
+  ServerReason,
+} from './messages'
 export { project } from './project'
 export type {
   BuyerSnapshot,
