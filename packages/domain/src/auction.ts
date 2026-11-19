@@ -21,18 +21,44 @@ export type Leader = {
   amount: number
 }
 
+export type BidSource = 'manual' | 'autobroker'
+
 export type Bid = {
   seq: number
   participantId: ParticipantId
   amount: number
   at: number
+  source: BidSource
 }
+
+export type Autobroker = {
+  maxAmount: number
+  setAt: number
+}
+
+export type BuyerId = 'a' | 'b'
+
+export type Autobrokers = Partial<Record<BuyerId, Autobroker>>
 
 export type AuctionState =
   | { stage: 'absent'; terms: null; endsAt: null }
   | { stage: 'awaiting'; terms: AuctionTerms; endsAt: null }
-  | { stage: 'live'; terms: AuctionTerms; endsAt: number; leader: Leader | null; bids: Bid[] }
-  | { stage: 'closed'; terms: AuctionTerms; endsAt: number; leader: Leader | null; bids: Bid[] }
+  | {
+      stage: 'live'
+      terms: AuctionTerms
+      endsAt: number
+      leader: Leader | null
+      bids: Bid[]
+      autobrokers: Autobrokers
+    }
+  | {
+      stage: 'closed'
+      terms: AuctionTerms
+      endsAt: number
+      leader: Leader | null
+      bids: Bid[]
+      autobrokers: Autobrokers
+    }
 
 export type AuctionCommand =
   | {
@@ -46,6 +72,8 @@ export type AuctionCommand =
   | { type: 'finish'; actorId: ParticipantId }
   | { type: 'restart'; actorId: ParticipantId }
   | { type: 'place_bid'; actorId: ParticipantId; amount: number }
+  | { type: 'set_autobroker'; actorId: ParticipantId; maxAmount: number }
+  | { type: 'remove_autobroker'; actorId: ParticipantId }
 
 export type RejectReason =
   | 'not_integer'
@@ -58,6 +86,7 @@ export type RejectReason =
   | 'already_leader'
   | 'not_started'
   | 'lot_closed'
+  | 'max_too_low'
 
 export type ApplyResult =
   | { ok: true; state: AuctionState }
@@ -87,6 +116,10 @@ export function apply(state: AuctionState, command: AuctionCommand, now: number)
       return applyRestart(state, command)
     case 'place_bid':
       return applyBid(state, command, now)
+    case 'set_autobroker':
+      return applySetAutobroker(state, command, now)
+    case 'remove_autobroker':
+      return applyRemoveAutobroker(state, command)
     default: {
       const unknown: never = command
       return unknown
@@ -128,6 +161,7 @@ function applyLaunch(
     endsAt: now + state.terms.durationMinutes * MINUTE_MS,
     leader: null,
     bids: [],
+    autobrokers: {},
   })
 }
 
@@ -141,6 +175,7 @@ function applyFinish(state: AuctionState, command: Extract<AuctionCommand, { typ
     endsAt: state.endsAt,
     leader: state.leader ? { ...state.leader } : null,
     bids: state.bids.map((bid) => ({ ...bid })),
+    autobrokers: copyAutobrokers(state.autobrokers),
   })
 }
 
@@ -160,7 +195,7 @@ function applyBid(
   command: Extract<AuctionCommand, { type: 'place_bid' }>,
   now: number,
 ): ApplyResult {
-  if (isSeller(command.actorId)) return reject(state, 'not_buyer')
+  if (!isBuyer(command.actorId)) return reject(state, 'not_buyer')
   if (state.stage === 'closed') return reject(state, 'lot_closed')
   if (state.stage !== 'live') return reject(state, 'not_started')
   if (!Number.isSafeInteger(command.amount)) return reject(state, 'not_integer')
@@ -168,21 +203,134 @@ function applyBid(
   if (command.amount < nextAmount(state)) return reject(state, 'below_min')
   if (command.amount % state.terms.minStep !== 0) return reject(state, 'not_multiple')
 
+  return accept(withChase(placeBid(state, command.actorId, command.amount, now, 'manual'), now))
+}
+
+function applySetAutobroker(
+  state: AuctionState,
+  command: Extract<AuctionCommand, { type: 'set_autobroker' }>,
+  now: number,
+): ApplyResult {
+  if (!isBuyer(command.actorId)) return reject(state, 'not_buyer')
+  if (state.stage === 'closed') return reject(state, 'lot_closed')
+  if (state.stage !== 'live') return reject(state, 'not_started')
+  if (!Number.isSafeInteger(command.maxAmount)) return reject(state, 'not_integer')
+
+  const floor = state.leader?.participantId === command.actorId ? state.leader.amount : nextAmount(state)
+  if (command.maxAmount < floor) return reject(state, 'max_too_low')
+
+  const saved: Extract<AuctionState, { stage: 'live' }> = {
+    ...state,
+    autobrokers: {
+      ...state.autobrokers,
+      [command.actorId]: { maxAmount: command.maxAmount, setAt: now },
+    },
+  }
+  return accept(withChase(saved, now))
+}
+
+function applyRemoveAutobroker(
+  state: AuctionState,
+  command: Extract<AuctionCommand, { type: 'remove_autobroker' }>,
+): ApplyResult {
+  if (!isBuyer(command.actorId)) return reject(state, 'not_buyer')
+  if (state.stage === 'closed') return reject(state, 'lot_closed')
+  if (state.stage !== 'live') return reject(state, 'not_started')
+  if (!state.autobrokers[command.actorId]) return accept(state)
+
+  const autobrokers = { ...state.autobrokers }
+  delete autobrokers[command.actorId]
+  return accept({ ...state, autobrokers })
+}
+
+function placeBid(
+  state: Extract<AuctionState, { stage: 'live' }>,
+  actorId: BuyerId,
+  amount: number,
+  now: number,
+  source: BidSource,
+): Extract<AuctionState, { stage: 'live' }> {
   const bid: Bid = {
     seq: state.bids.length + 1,
-    participantId: command.actorId,
-    amount: command.amount,
+    participantId: actorId,
+    amount,
     at: now,
+    source,
   }
-  return accept({
+  return {
     ...state,
-    leader: { participantId: command.actorId, amount: command.amount },
+    leader: { participantId: actorId, amount },
     bids: [...state.bids, bid],
+  }
+}
+
+function withChase(
+  state: Extract<AuctionState, { stage: 'live' }>,
+  now: number,
+): Extract<AuctionState, { stage: 'live' }> {
+  let current = state
+  for (let guard = 0; guard < 100_000; guard += 1) {
+    const actor = pickBroker(current)
+    if (!actor) return current
+    current = placeBid(current, actor, nextAmount(current), now, 'autobroker')
+  }
+  throw new Error('Autobroker did not stop')
+}
+
+function pickBroker(state: Extract<AuctionState, { stage: 'live' }>): BuyerId | null {
+  const price = nextAmount(state)
+  const bothOn = state.autobrokers.a !== undefined && state.autobrokers.b !== undefined
+  if (!state.leader && !bothOn) return null
+  if (bothOn && price > smallerCeiling(state)) return null
+
+  const candidates = (['a', 'b'] as const).filter((id) => {
+    const broker = state.autobrokers[id]
+    return broker !== undefined && broker.maxAmount >= price && state.leader?.participantId !== id
   })
+  if (candidates.length === 0) return null
+  if (candidates.length === 1) return candidates[0]
+
+  const stepsUntilFinal = (finalWarPrice(state) - price) / state.terms.minStep
+  const priority = priorityBuyer(state)
+  return stepsUntilFinal % 2 === 0 ? priority : otherBuyer(priority)
+}
+
+function smallerCeiling(state: Extract<AuctionState, { stage: 'live' }>): number {
+  return Math.min(state.autobrokers.a!.maxAmount, state.autobrokers.b!.maxAmount)
+}
+
+function finalWarPrice(state: Extract<AuctionState, { stage: 'live' }>): number {
+  const price = nextAmount(state)
+  const step = state.terms.minStep
+  const cap = smallerCeiling(state)
+  return cap - ((cap - price) % step)
+}
+
+function priorityBuyer(state: Extract<AuctionState, { stage: 'live' }>): BuyerId {
+  const left = state.autobrokers.a!
+  const right = state.autobrokers.b!
+  if (left.maxAmount !== right.maxAmount) return left.maxAmount > right.maxAmount ? 'a' : 'b'
+  if (left.setAt !== right.setAt) return left.setAt < right.setAt ? 'a' : 'b'
+  return 'a'
+}
+
+function otherBuyer(id: BuyerId): BuyerId {
+  return id === 'a' ? 'b' : 'a'
+}
+
+function copyAutobrokers(autobrokers: Autobrokers): Autobrokers {
+  return {
+    ...(autobrokers.a ? { a: { ...autobrokers.a } } : {}),
+    ...(autobrokers.b ? { b: { ...autobrokers.b } } : {}),
+  }
 }
 
 function isSeller(actorId: ParticipantId): boolean {
   return actorId === 's'
+}
+
+function isBuyer(actorId: ParticipantId): actorId is BuyerId {
+  return actorId === 'a' || actorId === 'b'
 }
 
 function isDuration(minutes: number): boolean {
