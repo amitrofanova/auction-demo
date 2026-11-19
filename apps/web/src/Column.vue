@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { STAGE_LABEL, participantById, type ClientMessage, type Participant } from '@auction/domain'
-import { computed, ref, watch } from 'vue'
-import { formatRubles } from './format'
+import {
+  STAGE_LABEL,
+  participantById,
+  suggestedAmount,
+  type ClientMessage,
+  type Participant,
+} from '@auction/domain'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { formatClock, formatRemaining, formatRubles } from './format'
 import { readIncoming } from './readSnapshot'
 import { reasonText } from './reasonText'
 import { useColumnSocket } from './useColumnSocket'
@@ -12,21 +18,35 @@ const props = defineProps<{
 
 const snapshot = ref<Extract<ReturnType<typeof readIncoming>, { kind: 'snapshot' }>['snapshot'] | null>(null)
 const sellerError = ref('')
+const bidError = ref('')
+const sending = ref(false)
 const startInput = ref('10000')
 const stepInput = ref('1000')
 const durationInput = ref('2')
+const amountInput = ref('')
+const tick = ref(Date.now())
+const clockOffset = ref(0)
 const isSeller = computed(() => props.participant.id === 's')
 const expectedRole = isSeller.value ? 'seller' : 'buyer'
+let clockTimer: ReturnType<typeof setInterval> | undefined
 
 const { status, send } = useColumnSocket(props.participant.id, (text) => {
   const next = readIncoming(text)
   if (!next) return
   if (next.kind === 'rejected') {
-    if (isSeller.value) sellerError.value = reasonText(next.reason)
+    if (next.command === 'place_bid') {
+      sending.value = false
+      bidError.value = reasonText(next.reason, 'place_bid')
+      return
+    }
+    if (isSeller.value) sellerError.value = reasonText(next.reason, next.command)
     return
   }
   if (next.snapshot.role !== expectedRole) return
   if (snapshot.value?.stage !== next.snapshot.stage) sellerError.value = ''
+  if (sending.value) bidError.value = ''
+  sending.value = false
+  clockOffset.value = next.snapshot.serverNow - Date.now()
   snapshot.value = next.snapshot
 })
 
@@ -34,6 +54,16 @@ watch(status, (value) => {
   if (value !== 'open') return
   const join: ClientMessage = { type: 'join', participantId: props.participant.id }
   send(JSON.stringify(join))
+})
+
+onMounted(() => {
+  clockTimer = setInterval(() => {
+    tick.value = Date.now()
+  }, 250)
+})
+
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer)
 })
 
 const statusText = computed(() => {
@@ -51,6 +81,29 @@ const termsText = computed(() => {
   const terms = snapshot.value?.terms
   if (!terms) return ''
   return `Старт ${formatRubles(terms.startingPrice)} · шаг ${formatRubles(terms.minStep)} · ${terms.durationMinutes} мин`
+})
+
+const trading = computed(() => snapshot.value?.stage === 'live' || snapshot.value?.stage === 'closed')
+const sellerSnapshot = computed(() => (snapshot.value?.role === 'seller' ? snapshot.value : null))
+const buyerSnapshot = computed(() => (snapshot.value?.role === 'buyer' ? snapshot.value : null))
+
+const suggested = computed(() => {
+  const current = snapshot.value
+  if (!current?.terms || current.stage !== 'live') return null
+  return suggestedAmount(current.terms, current.amount)
+})
+
+watch(suggested, (value) => {
+  if (value !== null) amountInput.value = String(value)
+})
+
+const amountLabel = computed(() => (snapshot.value?.amount == null ? '—' : formatRubles(snapshot.value.amount)))
+
+const timerText = computed(() => {
+  const current = snapshot.value
+  if (!current || current.stage === 'closed') return current?.stage === 'closed' ? 'закрыт' : '—'
+  if (current.stage !== 'live' || current.endsAt === null) return '—'
+  return formatRemaining(current.endsAt - (tick.value + clockOffset.value))
 })
 
 const socketOpen = computed(() => status.value === 'open')
@@ -80,6 +133,14 @@ function finishAuction() {
 function restartAuction() {
   sendCommand({ type: 'restart' })
 }
+
+function placeBid() {
+  if (sending.value || !socketOpen.value) return
+  bidError.value = ''
+  sending.value = true
+  const message: ClientMessage = { type: 'place_bid', amount: Number(amountInput.value) }
+  send(JSON.stringify(message))
+}
 </script>
 
 <template>
@@ -107,11 +168,60 @@ function restartAuction() {
       </div>
     </article>
 
+    <section v-if="snapshot && trading" class="board" data-testid="board">
+      <div v-if="sellerSnapshot">
+        <span>Лидер</span>
+        <strong data-testid="leader-name" :class="{ winner: sellerSnapshot.leader }">
+          {{ sellerSnapshot.leader?.name ?? '—' }}
+        </strong>
+      </div>
+      <div>
+        <span>Сумма</span>
+        <strong data-testid="leader-amount" :data-amount="snapshot.amount ?? ''">{{ amountLabel }}</strong>
+      </div>
+      <div>
+        <span>Шаг</span>
+        <strong data-testid="min-step">{{ snapshot.terms ? formatRubles(snapshot.terms.minStep) : '—' }}</strong>
+      </div>
+      <div>
+        <span>До конца</span>
+        <strong data-testid="timer" :data-ends-at="snapshot.endsAt ?? ''">{{ timerText }}</strong>
+      </div>
+    </section>
+
     <p v-if="!isSeller && snapshot?.stage === 'absent'" class="wait" data-testid="lot-wait">
       Продавец ещё не создал аукцион.
     </p>
     <p v-else-if="!isSeller && snapshot?.stage === 'awaiting'" class="wait" data-testid="lot-wait">
       Аукцион создан и ждёт запуска.
+    </p>
+
+    <section v-if="buyerSnapshot && snapshot?.stage === 'live'" class="panel">
+      <h2 class="panel-title">Ставка</h2>
+      <form @submit.prevent="placeBid">
+        <label>
+          Сумма, ₽
+          <input v-model="amountInput" data-testid="bid-amount" inputmode="numeric" autocomplete="off" />
+        </label>
+        <div class="actions">
+          <button class="primary" type="submit" data-testid="bid-submit" :disabled="!socketOpen || sending">
+            {{ sending ? 'Отправляем' : 'Поставить' }}
+          </button>
+        </div>
+      </form>
+      <p v-if="suggested !== null" class="hint">От {{ formatRubles(suggested) }}, только сумма кратная шагу.</p>
+      <p v-if="bidError" class="error" data-testid="bid-error">{{ bidError }}</p>
+    </section>
+
+    <p
+      v-if="buyerSnapshot && snapshot?.stage === 'closed' && buyerSnapshot.youLead"
+      class="win"
+      data-testid="winner-message"
+    >
+      Вы победили. Итог {{ amountLabel }}.
+    </p>
+    <p v-else-if="buyerSnapshot && snapshot?.stage === 'closed'" class="wait" data-testid="lot-wait">
+      Торги завершены.
     </p>
 
     <section v-if="isSeller && snapshot?.stage === 'absent'" class="panel">
@@ -155,7 +265,7 @@ function restartAuction() {
       <p v-if="sellerError" class="error" data-testid="seller-error">{{ sellerError }}</p>
     </section>
 
-    <section v-else-if="isSeller && (snapshot?.stage === 'live' || snapshot?.stage === 'closed')" class="panel">
+    <section v-else-if="isSeller && trading" class="panel">
       <div class="actions">
         <button
           v-if="snapshot?.stage === 'live'"
@@ -178,6 +288,21 @@ function restartAuction() {
         </button>
       </div>
       <p v-if="sellerError" class="error" data-testid="seller-error">{{ sellerError }}</p>
+    </section>
+
+    <section v-if="sellerSnapshot && trading" class="panel" data-testid="bid-feed">
+      <h2 class="panel-title">Лента ставок</h2>
+      <p class="counters" data-testid="bid-count">Ставок: {{ sellerSnapshot.bids.length }}</p>
+      <p v-if="sellerSnapshot.bids.length === 0" class="hint">Ставок пока нет</p>
+      <ol v-else class="feed" data-testid="bid-list">
+        <li v-for="bid in sellerSnapshot.bids" :key="bid.seq">
+          <span class="seq">#{{ bid.seq }}</span>
+          <span class="name">{{ bid.name }}</span>
+          <span class="sum">{{ formatRubles(bid.amount) }}</span>
+          <span class="source">{{ bid.source === 'autobroker' ? 'авто' : 'вручную' }}</span>
+          <time>{{ formatClock(bid.at) }}</time>
+        </li>
+      </ol>
     </section>
   </section>
 </template>

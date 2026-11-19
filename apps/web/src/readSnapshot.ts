@@ -4,7 +4,7 @@ const STAGES = new Set(['absent', 'awaiting', 'live', 'closed'])
 
 export type Incoming =
   | { kind: 'snapshot'; snapshot: Snapshot }
-  | { kind: 'rejected'; reason: string }
+  | { kind: 'rejected'; reason: string; command?: string }
 
 export function readIncoming(text: string): Incoming | null {
   let value: unknown
@@ -14,9 +14,14 @@ export function readIncoming(text: string): Incoming | null {
     return null
   }
   if (!value || typeof value !== 'object') return null
-  const body = value as { type?: unknown; role?: unknown; stage?: unknown; reason?: unknown }
+  const body = value as { type?: unknown; role?: unknown; stage?: unknown; reason?: unknown; command?: unknown }
   if (body.type === 'rejected') {
-    return typeof body.reason === 'string' ? { kind: 'rejected', reason: body.reason } : null
+    if (typeof body.reason !== 'string') return null
+    return {
+      kind: 'rejected',
+      reason: body.reason,
+      command: typeof body.command === 'string' ? body.command : undefined,
+    }
   }
   if (body.type !== 'snapshot') return null
   if (body.role !== 'buyer' && body.role !== 'seller') return null

@@ -98,12 +98,16 @@ export function emptyAuction(): AuctionState {
   return { stage: 'absent', terms: null, endsAt: null }
 }
 
-/** Следующая сумма для поля: не ниже старта и шага, дальше не ниже лидера плюс шаг, и всегда кратна шагу. */
-export function nextAmount(state: Extract<AuctionState, { stage: 'live' }>): number {
-  const step = state.terms.minStep
-  const floor = state.leader ? state.leader.amount + step : Math.max(state.terms.startingPrice, step)
+/** Следующая сумма для поля: не ниже старта и шага, дальше не ниже текущей цены плюс шаг, и всегда кратна шагу. */
+export function suggestedAmount(terms: Pick<AuctionTerms, 'startingPrice' | 'minStep'>, amount: number | null): number {
+  const step = terms.minStep
+  const floor = amount === null ? Math.max(terms.startingPrice, step) : amount + step
   const remainder = floor % step
   return remainder === 0 ? floor : floor + (step - remainder)
+}
+
+export function nextAmount(state: Extract<AuctionState, { stage: 'live' }>): number {
+  return suggestedAmount(state.terms, state.leader?.amount ?? null)
 }
 
 export function apply(state: AuctionState, command: AuctionCommand, now: number): ApplyResult {
