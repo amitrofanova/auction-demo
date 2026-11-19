@@ -10,7 +10,8 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "concurrently -k -n server,web -c blue,green \"npm run dev -w @auction/server\" \"npm run dev -w @auction/web\""
+    "dev": "concurrently -k -n server,web -c blue,green \"npm run dev -w @auction/server\" \"npm run dev -w @auction/web\"",
+    "test": "npm run test -w @auction/domain"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

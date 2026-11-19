@@ -7,7 +7,7 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@auction/shared": "*",
+    "@auction/domain": "*",
     "vue": "^3.5.13"
   },
   "devDependencies": {

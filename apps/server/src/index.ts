@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http'
-import { participantById } from '@auction/shared'
+import { participantById } from '@auction/domain'
 import { WebSocketServer } from 'ws'
 
 const port = Number(process.env.WS_PORT ?? 8787)

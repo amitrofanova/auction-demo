@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Participant } from '@auction/shared'
+import type { Participant } from '@auction/domain'
 import { computed } from 'vue'
 import { useColumnSocket } from './useColumnSocket'
 

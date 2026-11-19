@@ -6,7 +6,7 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@auction/shared": "*",
+    "@auction/domain": "*",
     "ws": "^8.18.2"
   },
   "devDependencies": {

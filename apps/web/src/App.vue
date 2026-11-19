@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { PARTICIPANTS } from '@auction/shared'
+import { PARTICIPANTS } from '@auction/domain'
 import Column from './Column.vue'
 </script>
 

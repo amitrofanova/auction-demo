@@ -1,4 +1,4 @@
-import type { ParticipantId } from '@auction/shared'
+import type { ParticipantId } from '@auction/domain'
 import { onMounted, onUnmounted, ref } from 'vue'
 
 export type SocketStatus = 'connecting' | 'open' | 'closed'
