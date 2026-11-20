@@ -158,6 +158,62 @@ describe('room', () => {
     expect(asSeller(lastSnapshot(desk.seller)).leader).toEqual({ participantId: 'a', name: 'Покупатель 1' })
     expect(desk.clock.delay()).toBeNull()
   })
+
+  it('runs create, launch, a manual bid, an autobroker reply, finish, restart, and launch again', () => {
+    const desk = seated()
+    desk.seller.send(createLot)
+    expect(asBuyer(lastSnapshot(desk.buyerA)).stage).toBe('awaiting')
+    expect(asBuyer(lastSnapshot(desk.buyerA)).terms).toEqual({
+      startingPrice: 10_000,
+      minStep: 1_000,
+      durationMinutes: 2,
+    })
+
+    desk.seller.send({ type: 'launch' })
+    desk.buyerB.send({ type: 'set_autobroker', maxAmount: 25_000 })
+    expect(asBuyer(lastSnapshot(desk.buyerB)).autobids).toEqual([])
+
+    desk.buyerA.send({ type: 'place_bid', amount: 10_000 })
+    const buyerA = asBuyer(lastSnapshot(desk.buyerA))
+    const buyerB = asBuyer(lastSnapshot(desk.buyerB))
+    const seller = asSeller(lastSnapshot(desk.seller))
+    expect(buyerA.amount).toBe(11_000)
+    expect(buyerA.youLead).toBe(false)
+    expect(buyerA.autobroker).toBeNull()
+    expect(buyerB.youLead).toBe(true)
+    expect(buyerB.autobids).toEqual([{ seq: 2, amount: 11_000, at: T0 }])
+    expect(buyerB.autobroker).toEqual({ maxAmount: 25_000 })
+    expect(seller.leader).toEqual({ participantId: 'b', name: 'Покупатель 2' })
+    expect(seller.bids.map((bid) => [bid.participantId, bid.amount, bid.source])).toEqual([
+      ['a', 10_000, 'manual'],
+      ['b', 11_000, 'autobroker'],
+    ])
+    expect(JSON.stringify(buyerA)).not.toContain('25000')
+    expect(JSON.stringify(seller)).not.toContain('25000')
+
+    desk.seller.send({ type: 'finish' })
+    expect(asBuyer(lastSnapshot(desk.buyerA)).stage).toBe('closed')
+    expect(asBuyer(lastSnapshot(desk.buyerB)).youLead).toBe(true)
+    expect(asSeller(lastSnapshot(desk.seller)).leader?.name).toBe('Покупатель 2')
+
+    desk.seller.send({ type: 'restart' })
+    const reset = asSeller(lastSnapshot(desk.seller))
+    expect(reset.stage).toBe('awaiting')
+    expect(reset.terms).toEqual({ startingPrice: 10_000, minStep: 1_000, durationMinutes: 2 })
+    expect(reset.bids).toEqual([])
+    expect(reset.leader).toBeNull()
+    expect(asBuyer(lastSnapshot(desk.buyerA)).stage).toBe('awaiting')
+    expect(asBuyer(lastSnapshot(desk.buyerB)).autobroker).toBeNull()
+    expect(asBuyer(lastSnapshot(desk.buyerB)).autobids).toEqual([])
+
+    desk.seller.send({ type: 'launch' })
+    const again = asSeller(lastSnapshot(desk.seller))
+    expect(again.stage).toBe('live')
+    expect(again.bids).toEqual([])
+    expect(again.leader).toBeNull()
+    expect(asBuyer(lastSnapshot(desk.buyerB)).autobroker).toBeNull()
+    expect(asBuyer(lastSnapshot(desk.buyerA)).amount).toBeNull()
+  })
 })
 
 function seated() {

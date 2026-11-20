@@ -10,6 +10,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { formatClock, formatRemaining, formatRubles } from './format'
 import { readIncoming } from './readSnapshot'
 import { reasonText } from './reasonText'
+import { freshCatchUp, noteConnected, takeSnapshot, type CatchUp } from './takeSnapshot'
 import { useColumnSocket } from './useColumnSocket'
 
 const props = defineProps<{
@@ -30,6 +31,8 @@ const tick = ref(Date.now())
 const clockOffset = ref(0)
 const isSeller = computed(() => props.participant.id === 's')
 const expectedRole = isSeller.value ? 'seller' : 'buyer'
+const sawConnection = ref(false)
+let catchUp: CatchUp = freshCatchUp()
 let clockTimer: ReturnType<typeof setInterval> | undefined
 
 const { status, send } = useColumnSocket(props.participant.id, (text) => {
@@ -57,6 +60,9 @@ const { status, send } = useColumnSocket(props.participant.id, (text) => {
     return
   }
   if (next.snapshot.role !== expectedRole) return
+  const decision = takeSnapshot(catchUp, next.snapshot.seq)
+  catchUp = decision.catchUp
+  if (!decision.apply) return
   if (snapshot.value?.stage !== next.snapshot.stage) sellerError.value = ''
   if (sending.value) bidError.value = ''
   sending.value = false
@@ -66,6 +72,8 @@ const { status, send } = useColumnSocket(props.participant.id, (text) => {
 
 watch(status, (value) => {
   if (value !== 'open') return
+  sawConnection.value = true
+  catchUp = noteConnected(catchUp)
   const join: ClientMessage = { type: 'join', participantId: props.participant.id }
   send(JSON.stringify(join))
 })
@@ -82,6 +90,7 @@ onUnmounted(() => {
 
 const statusText = computed(() => {
   if (status.value === 'open') return 'подключено'
+  if (sawConnection.value) return 'связь пропала'
   if (status.value === 'connecting') return 'соединение…'
   return 'нет соединения'
 })
@@ -111,7 +120,7 @@ watch(suggested, (value) => {
   if (value !== null) amountInput.value = String(value)
 })
 
-const amountLabel = computed(() => (snapshot.value?.amount == null ? '—' : formatRubles(snapshot.value.amount)))
+const amountLabel = computed(() => (snapshot.value?.amount == null ? '-' : formatRubles(snapshot.value.amount)))
 
 const brokerStatus = computed(() => {
   const broker = buyerSnapshot.value?.autobroker
@@ -121,8 +130,8 @@ const brokerStatus = computed(() => {
 
 const timerText = computed(() => {
   const current = snapshot.value
-  if (!current || current.stage === 'closed') return current?.stage === 'closed' ? 'закрыт' : '—'
-  if (current.stage !== 'live' || current.endsAt === null) return '—'
+  if (!current || current.stage === 'closed') return current?.stage === 'closed' ? 'закрыт' : '-'
+  if (current.stage !== 'live' || current.endsAt === null) return '-'
   return formatRemaining(current.endsAt - (tick.value + clockOffset.value))
 })
 
@@ -206,7 +215,7 @@ function removeAutobroker() {
       <div v-if="sellerSnapshot">
         <span>Лидер</span>
         <strong data-testid="leader-name" :class="{ winner: sellerSnapshot.leader }">
-          {{ sellerSnapshot.leader?.name ?? '—' }}
+          {{ sellerSnapshot.leader?.name ?? '-' }}
         </strong>
       </div>
       <div>
@@ -215,7 +224,7 @@ function removeAutobroker() {
       </div>
       <div>
         <span>Шаг</span>
-        <strong data-testid="min-step">{{ snapshot.terms ? formatRubles(snapshot.terms.minStep) : '—' }}</strong>
+        <strong data-testid="min-step">{{ snapshot.terms ? formatRubles(snapshot.terms.minStep) : '-' }}</strong>
       </div>
       <div>
         <span>До конца</span>
@@ -250,7 +259,7 @@ function removeAutobroker() {
     <section v-if="buyerSnapshot && snapshot?.stage === 'live'" class="panel">
       <h2 class="panel-title">Автоброкер</h2>
       <p data-testid="broker-status">{{ brokerStatus }}</p>
-      <p class="hint">Каждый ответ равен шагу. Потолок — до какой цены отвечать.</p>
+      <p class="hint">Каждый ответ равен шагу. Потолок - до какой цены отвечать.</p>
       <label v-if="!buyerSnapshot.autobroker">
         Потолок, ₽
         <input v-model="brokerInput" data-testid="broker-max" inputmode="numeric" autocomplete="off" />

@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "dev": "concurrently -k -n server,web -c blue,green \"npm run dev -w @auction/server\" \"npm run dev -w @auction/web\"",
-    "test": "npm run test -w @auction/domain && npm run test -w @auction/server"
+    "test": "npm run test -w @auction/domain && npm run test -w @auction/server && npm run test -w @auction/web"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
